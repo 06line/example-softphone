@@ -18,6 +18,7 @@ const endReasons: Record<EndReason, string> = {
   busy: "Busy",
   line_offline: "Your line went offline",
   failed: "The call failed",
+  answered_elsewhere: "Answered on another device",
 }
 
 // toE164 accepts what people type: +33612345678, or a French number such as 06 12 34 56 78.
@@ -72,13 +73,17 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
     }
   }, [apiUrl])
 
-  // follow shows a call and redraws on each of its changes; the end screen stays a few seconds.
+  // follow shows a call and redraws on each of its changes; the end screen stays a few seconds. An incoming call that
+  // ends before it was answered here (missed, or answered on another device) just stops ringing.
   function follow(c: Call) {
     setCall(c)
     setLevels({ input: 0, output: 0 })
     c.on("state", redraw)
     c.on("level", setLevels)
-    c.on("ended", () => setTimeout(() => setCall((current) => (current === c ? null : current)), 3000))
+    c.on("ended", () => {
+      const missed = c.direction === "inbound" && !c.answeredAt
+      setTimeout(() => setCall((current) => (current === c ? null : current)), missed ? 0 : 3000)
+    })
   }
 
   // The talk time ticks once a second during a call.
