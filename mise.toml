@@ -1,0 +1,10 @@
+[tools]
+bun = "1.4"
+
+[tasks.dev]
+description = "Softphone on http://localhost:3000"
+run = "bun install --silent && bun --bun run dev"
+
+[tasks.check]
+description = "Typecheck and build"
+run = "bun install --silent && bun --bun run typecheck && bun --bun run build"
