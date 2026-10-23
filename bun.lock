@@ -5,7 +5,7 @@
     "": {
       "name": "06line-example-softphone",
       "dependencies": {
-        "@06line/sdk-browser": "^0.4.1",
+        "@06line/sdk-browser": "^0.5.0",
         "lucide-react": "^1.61.0",
         "next": "16.4.2",
         "react": "19.3.0",
@@ -23,7 +23,7 @@
     },
   },
   "packages": {
-    "@06line/sdk-browser": ["@06line/sdk-browser@0.4.1", "", {}, "sha512-hK4yKqER8jWR90aZFzzYTJXKiESHsqzyeXP55N6HIPutIFlkTci7/Tt+hH0KtFik7UFhE82Wj9ORHFajPfcSzg=="],
+    "@06line/sdk-browser": ["@06line/sdk-browser@0.5.0", "", {}, "sha512-3Nu7NB4gZ1h+8yICXGN8OraB1gsUznokIep5fpbZAXNeN3Av3d5D5IIflDadAoSv1c74pjIldM7K5XBSZI3Oiw=="],
 
     "@alloc/quick-lru": ["@alloc/quick-lru@5.3.0", "", {}, "sha512-U4+70Pc5ZS9osnCBCE5Jha/ciHM+Yp+CNMNC/7HvYbNRk1Ldd+f7qO65W5qfhu/TCv+/ozljlXXe9Nj8419DMA=="],
 
