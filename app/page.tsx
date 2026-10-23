@@ -1,7 +1,7 @@
 import { Softphone } from "@/components/softphone"
 import { sixline, type ServerLine } from "@/lib/server"
 
-// Rendered on the server: the lines come with the page, so the phone shows its number before the WebRTC session opens.
+// Rendered on the server: the lines come with the page, so the phone shows its number before its event stream opens.
 export const dynamic = "force-dynamic"
 
 export default async function Page() {

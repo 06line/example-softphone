@@ -22,7 +22,8 @@ Open it in Chrome, Edge, Firefox or Safari. The page asks for the microphone on 
 | `app/page.tsx` | your server | Renders the page with your lines (`GET /v1/lines`), so the number shows before the phone connects |
 | `components/softphone.tsx` | the browser | `createPhone()`, the waiting room, the call room, the incoming call and the audio settings |
 
-The SDK does the rest: the WebRTC session and its reconnections, key renewal, devices, volumes, mute and levels.
+The SDK does the rest: the event stream and its reconnections, the WebRTC session of each call, key renewal, devices,
+volumes, mute and levels.
 In your app, check that the user is signed in before `/api/06line-key` hands out a key.
 
 ## License

@@ -69,7 +69,8 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
     outputVolume: audio.speakerOn ? audio.outputVolume : 0,
   }
 
-  // One phone per page: it opens the WebRTC session and keeps it until the page closes.
+  // One phone per page: it opens the event stream and keeps it until the page closes; each call has its own WebRTC
+  // session.
   React.useEffect(() => {
     const p = createPhone({
       baseUrl: apiUrl,
