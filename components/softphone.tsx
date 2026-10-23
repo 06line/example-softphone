@@ -1,13 +1,21 @@
 "use client"
 
 import { type Call, createPhone, type EndReason, type Phone, type PhoneState } from "@06line/sdk-browser"
-import { HeadphoneOff, Headphones, Mic, MicOff, Phone as PhoneIcon, PhoneOff, Settings, User, X } from "lucide-react"
+import { Check, ChevronUp, Mic, MicOff, Phone as PhoneIcon, PhoneOff, User, Volume2, VolumeX } from "lucide-react"
 import * as React from "react"
 
 type LineView = { number: string; online: boolean; signal?: number }
 
-// The devices and volumes chosen in the settings, for the next calls and the one in progress.
-type AudioChoice = { input: string; output: string; inputVolume: number; outputVolume: number }
+// The devices and volumes chosen, and whether the microphone and the speaker are on, for the next calls and the one in
+// progress.
+type AudioChoice = {
+  input: string
+  output: string
+  inputVolume: number
+  outputVolume: number
+  micOn: boolean
+  speakerOn: boolean
+}
 
 type Levels = { input: number; output: number }
 
@@ -43,12 +51,21 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
   const [levels, setLevels] = React.useState<Levels>({ input: 0, output: 0 })
   const [now, setNow] = React.useState(0)
   const [error, setError] = React.useState<string | null>(null)
-  const [settings, setSettings] = React.useState(false)
-  // Deafened, the call is silent and the microphone off, like in Discord; mutedBefore is the microphone to restore.
-  const [deafened, setDeafened] = React.useState<{ mutedBefore: boolean } | null>(null)
-  const [audio, setAudio] = React.useState<AudioChoice>({ input: "default", output: "default", inputVolume: 1, outputVolume: 1 })
-  // The speaker can only be chosen where the browser allows it (not in Safari).
-  const audioOptions = { ...audio, output: phone?.canChooseOutput ? audio.output : undefined }
+  const [audio, setAudio] = React.useState<AudioChoice>({
+    input: "default",
+    output: "default",
+    inputVolume: 1,
+    outputVolume: 1,
+    micOn: true,
+    speakerOn: true,
+  })
+  // The speaker can only be chosen where the browser allows it (not in Safari); switched off, it plays at volume 0.
+  const audioOptions = {
+    input: audio.input,
+    output: phone?.canChooseOutput ? audio.output : undefined,
+    inputVolume: audio.inputVolume,
+    outputVolume: audio.speakerOn ? audio.outputVolume : 0,
+  }
 
   // One phone per page: it opens the WebRTC session and keeps it until the page closes.
   React.useEffect(() => {
@@ -79,7 +96,6 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
   // ends before it was answered here (missed, or answered on another device) just stops ringing.
   function follow(c: Call) {
     setCall(c)
-    setDeafened(null)
     setLevels({ input: 0, output: 0 })
     c.on("state", redraw)
     c.on("level", setLevels)
@@ -117,35 +133,49 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
     }
   }
 
-  function deafen(c: Call) {
-    if (deafened) {
-      c.setOutputVolume(audio.outputVolume)
-      c.mute(deafened.mutedBefore)
-      return setDeafened(null)
-    }
+  const incoming = call?.direction === "inbound" && call.state === "ringing" ? call : null
+  const inCall = call && !incoming && call.state !== "ended" ? call : null
 
-    setDeafened({ mutedBefore: c.muted })
-    c.setOutputVolume(0)
-    c.mute(true)
+  // change keeps a choice for the next calls, and applies it to the call in progress.
+  function change(next: Partial<AudioChoice>) {
+    const choice = { ...audio, ...next }
+    setAudio(choice)
+    if (!inCall) return
+
+    if ("micOn" in next) inCall.mute(!choice.micOn)
+    if ("speakerOn" in next || "outputVolume" in next) inCall.setOutputVolume(choice.speakerOn ? choice.outputVolume : 0)
+    if ("inputVolume" in next) inCall.setInputVolume(choice.inputVolume)
+    if ("input" in next) void inCall.setInput(choice.input).catch((e: Error) => setError(e.message))
+    if ("output" in next) void inCall.setOutput(choice.output).catch((e: Error) => setError(e.message))
   }
 
-  const dial = () => act(async () => follow(await phone!.call({ to: toE164(number), ...audioOptions })))
+  // A call opens its microphone on; the one switched off before stays off.
+  const dial = () =>
+    act(async () => {
+      const c = await phone!.call({ to: toE164(number), ...audioOptions })
+      if (!audio.micOn) c.mute(true)
+      follow(c)
+    })
+  const answer = (c: Call) =>
+    act(async () => {
+      await c.answer(audioOptions)
+      if (!audio.micOn) c.mute(true)
+    })
+
   const ready = state === "connected" && Boolean(line?.online)
-  const incoming = call?.direction === "inbound" && call.state === "ringing" ? call : null
-  const inCall = call && !incoming ? call : null
+  const controls = phone && <AudioControls phone={phone} audio={audio} change={change} />
 
   return (
     <div className="flex min-h-dvh flex-col bg-[#202124] text-[#e8eaed]">
-      {inCall ? (
+      {call && !incoming ? (
         <CallRoom
-          call={inCall}
+          call={call}
           line={line}
           levels={levels}
           now={now}
-          deafened={Boolean(deafened)}
-          onDeafen={() => deafen(inCall)}
-          onSettings={() => setSettings(true)}
-          onHangup={() => act(() => inCall.hangup())}
+          micOn={audio.micOn}
+          controls={controls}
+          onHangup={() => act(() => call.hangup())}
         />
       ) : (
         <Lobby
@@ -155,22 +185,14 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
           ready={ready}
           number={number}
           setNumber={setNumber}
-          audio={audio}
+          audioOptions={audioOptions}
+          controls={controls}
           onCall={dial}
-          onSettings={() => setSettings(true)}
         />
       )}
 
       {incoming && (
-        <IncomingDialog
-          call={incoming}
-          onAnswer={() => act(() => incoming.answer(audioOptions))}
-          onDecline={() => act(() => incoming.hangup())}
-        />
-      )}
-
-      {settings && phone && (
-        <SettingsPanel phone={phone} call={inCall} deafened={Boolean(deafened)} audio={audio} setAudio={setAudio} onClose={() => setSettings(false)} />
+        <IncomingDialog call={incoming} onAnswer={() => answer(incoming)} onDecline={() => act(() => incoming.hangup())} />
       )}
 
       {error && (
@@ -188,7 +210,8 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
   )
 }
 
-// Lobby is the screen before a call, like "Ready to join?" in Meet: your tile on the left, the number on the right.
+// Lobby is the screen before a call, like "Ready to join?" in Meet: your tile with the microphone and the speaker on
+// the left, the number on the right.
 function Lobby({
   phone,
   line,
@@ -196,9 +219,9 @@ function Lobby({
   ready,
   number,
   setNumber,
-  audio,
+  audioOptions,
+  controls,
   onCall,
-  onSettings,
 }: {
   phone: Phone | null
   line: LineView | null
@@ -206,9 +229,9 @@ function Lobby({
   ready: boolean
   number: string
   setNumber: (number: string) => void
-  audio: AudioChoice
+  audioOptions: Parameters<Phone["testMicrophone"]>[0]
+  controls: React.ReactNode
   onCall: () => void
-  onSettings: () => void
 }) {
   const [test, setTest] = React.useState<{ stop(): void } | null>(null)
   const [testError, setTestError] = React.useState<string | null>(null)
@@ -220,7 +243,7 @@ function Lobby({
 
     setTestError(null)
     try {
-      setTest(await phone!.testMicrophone({ ...audio, output: phone!.canChooseOutput ? audio.output : undefined }))
+      setTest(await phone!.testMicrophone(audioOptions))
     } catch (e) {
       setTestError((e as Error).message)
     }
@@ -236,27 +259,12 @@ function Lobby({
       </header>
 
       <div className="mx-auto grid w-full max-w-6xl flex-1 items-center gap-10 px-6 pb-16 lg:grid-cols-[1.5fr_1fr]">
-        <section className="relative aspect-[4/3] w-full overflow-hidden rounded-2xl bg-[#3c4043] sm:aspect-video">
+        <section className="relative aspect-[4/3] w-full rounded-2xl bg-[#3c4043] sm:aspect-video">
           <div className="absolute inset-0 flex items-center justify-center">
             <Avatar label="You" speaking={Boolean(test)} />
           </div>
-          <p className="absolute top-4 left-4 text-sm text-[#e8eaed]/80">
-            {test ? "You hear yourself half a second later" : "The browser asks for your microphone on the first test or call"}
-          </p>
-          <div className="absolute inset-x-0 bottom-4 flex justify-center gap-3">
-            <button
-              onClick={toggleTest}
-              disabled={!phone}
-              className={`flex h-12 items-center gap-2 rounded-full px-5 text-sm font-medium transition disabled:opacity-40 ${test ? "bg-[#8ab4f8] text-[#202124] hover:bg-[#aecbfa]" : "bg-[#202124]/70 hover:bg-[#202124]"}`}
-            >
-              <Mic className="size-5" />
-              {test ? "Stop the test" : "Test your microphone"}
-            </button>
-            <ControlButton label="Audio settings" onClick={onSettings} disabled={!phone}>
-              <Settings className="size-5" />
-            </ControlButton>
-          </div>
-          {testError && <p className="absolute top-12 left-4 text-xs text-[#f28b82]">{testError}</p>}
+          {test && <p className="absolute top-4 left-4 text-sm text-[#e8eaed]/80">You hear yourself 1.5 s later</p>}
+          <div className="absolute inset-x-0 bottom-4 flex justify-center">{controls}</div>
         </section>
 
         <section className="flex flex-col items-center text-center">
@@ -289,7 +297,20 @@ function Lobby({
             >
               Call now
             </button>
-            <p className="text-xs text-[#9aa0a6]">+33 6 12 34 56 78 or 06 12 34 56 78</p>
+            <button
+              type="button"
+              onClick={toggleTest}
+              disabled={!phone}
+              className={`flex items-center justify-center gap-2 rounded-full px-6 py-3 font-medium transition disabled:opacity-40 ${test ? "bg-[#8ab4f8] text-[#202124] hover:bg-[#aecbfa]" : "text-[#8ab4f8] hover:bg-[#8ab4f8]/10"}`}
+            >
+              <Mic className="size-4" />
+              {test ? "Stop the test" : "Test your microphone"}
+            </button>
+            {testError ? (
+              <p className="text-xs text-[#f28b82]">{testError}</p>
+            ) : (
+              <p className="text-xs text-[#9aa0a6]">+33 6 12 34 56 78 or 06 12 34 56 78</p>
+            )}
           </form>
         </section>
       </div>
@@ -303,18 +324,16 @@ function CallRoom({
   line,
   levels,
   now,
-  deafened,
-  onDeafen,
-  onSettings,
+  micOn,
+  controls,
   onHangup,
 }: {
   call: Call
   line: LineView | null
   levels: Levels
   now: number
-  deafened: boolean
-  onDeafen: () => void
-  onSettings: () => void
+  micOn: boolean
+  controls: React.ReactNode
   onHangup: () => void
 }) {
   const peer = call.direction === "inbound" ? call.from : call.to
@@ -331,7 +350,7 @@ function CallRoom({
     <main className="flex flex-1 flex-col">
       <div className="grid flex-1 content-center gap-4 p-4 md:grid-cols-2">
         <Tile name={peer} note={call.state === "active" ? undefined : status} speaking={!ended && levels.output > 0.06} />
-        <Tile name="You" muted={call.muted} speaking={!ended && !call.muted && levels.input > 0.06} />
+        <Tile name="You" muted={!micOn} speaking={!ended && micOn && levels.input > 0.06} />
       </div>
 
       <footer className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-6 pb-6">
@@ -342,20 +361,7 @@ function CallRoom({
         </p>
 
         <div className="flex items-center gap-3">
-          <ControlButton
-            label={call.muted ? "Turn on microphone" : "Turn off microphone"}
-            danger={call.muted}
-            disabled={ended || deafened}
-            onClick={() => call.mute(!call.muted)}
-          >
-            {call.muted ? <MicOff className="size-5" /> : <Mic className="size-5" />}
-          </ControlButton>
-          <ControlButton label={deafened ? "Undeafen" : "Deafen"} danger={deafened} disabled={ended} onClick={onDeafen}>
-            {deafened ? <HeadphoneOff className="size-5" /> : <Headphones className="size-5" />}
-          </ControlButton>
-          <ControlButton label="Audio settings" onClick={onSettings} disabled={ended}>
-            <Settings className="size-5" />
-          </ControlButton>
+          {controls}
           <button
             onClick={onHangup}
             disabled={ended}
@@ -402,28 +408,164 @@ function Avatar({ label, speaking }: { label: string; speaking?: boolean }) {
   )
 }
 
-function ControlButton({
-  label,
-  active,
-  danger,
-  children,
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string; active?: boolean; danger?: boolean }) {
-  const colors = danger
-    ? "bg-[#ea4335] text-white hover:bg-[#d93025]"
-    : active
-      ? "bg-[#8ab4f8] text-[#202124] hover:bg-[#aecbfa]"
-      : "bg-[#3c4043] hover:bg-[#4a4e51]"
+// AudioControls are the microphone and the speaker of Meet: the round button switches it off and on, the arrow picks
+// the device and the volume.
+function AudioControls({ phone, audio, change }: { phone: Phone; audio: AudioChoice; change: (next: Partial<AudioChoice>) => void }) {
+  const [devices, setDevices] = React.useState<{ inputs: MediaDeviceInfo[]; outputs: MediaDeviceInfo[] }>({ inputs: [], outputs: [] })
+  const [open, setOpen] = React.useState<"input" | "output" | null>(null)
+
+  // The names of the devices appear once the browser allows the microphone, so the list is read on each opening.
+  function toggleMenu(menu: "input" | "output") {
+    if (open === menu) return setOpen(null)
+
+    setOpen(menu)
+    void phone.devices().then(setDevices)
+  }
 
   return (
-    <button
-      {...props}
-      aria-label={label}
-      title={label}
-      className={`flex size-12 items-center justify-center rounded-full transition disabled:opacity-40 ${colors}`}
-    >
+    <div className="flex items-center gap-3">
+      <DeviceButton
+        label={audio.micOn ? "Turn off microphone" : "Turn on microphone"}
+        menuLabel="Microphone settings"
+        on={audio.micOn}
+        icon={audio.micOn ? <Mic className="size-5" /> : <MicOff className="size-5" />}
+        onToggle={() => change({ micOn: !audio.micOn })}
+        onMenu={() => toggleMenu("input")}
+      >
+        {open === "input" && (
+          <DeviceMenu
+            title="Microphone"
+            devices={devices.inputs}
+            value={audio.input}
+            onSelect={(input) => change({ input })}
+            volume={audio.inputVolume}
+            onVolume={(inputVolume) => change({ inputVolume })}
+            onClose={() => setOpen(null)}
+          />
+        )}
+      </DeviceButton>
+      <DeviceButton
+        label={audio.speakerOn ? "Turn off sound" : "Turn on sound"}
+        menuLabel="Speaker settings"
+        on={audio.speakerOn}
+        icon={audio.speakerOn ? <Volume2 className="size-5" /> : <VolumeX className="size-5" />}
+        onToggle={() => change({ speakerOn: !audio.speakerOn })}
+        onMenu={() => toggleMenu("output")}
+      >
+        {open === "output" && (
+          <DeviceMenu
+            title="Speakers"
+            devices={phone.canChooseOutput ? devices.outputs : null}
+            value={audio.output}
+            onSelect={(output) => change({ output })}
+            volume={audio.outputVolume}
+            onVolume={(outputVolume) => change({ outputVolume })}
+            onClose={() => setOpen(null)}
+          />
+        )}
+      </DeviceButton>
+    </div>
+  )
+}
+
+function DeviceButton({
+  label,
+  menuLabel,
+  on,
+  icon,
+  onToggle,
+  onMenu,
+  children,
+}: {
+  label: string
+  menuLabel: string
+  on: boolean
+  icon: React.ReactNode
+  onToggle: () => void
+  onMenu: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <div className="relative flex items-center rounded-full bg-[#202124]/70">
+      <button onClick={onMenu} aria-label={menuLabel} title={menuLabel} className="flex h-12 w-8 items-center justify-center rounded-l-full pl-1 hover:bg-white/10">
+        <ChevronUp className="size-4" />
+      </button>
+      <button
+        onClick={onToggle}
+        aria-label={label}
+        title={label}
+        className={`flex size-12 items-center justify-center rounded-full transition ${on ? "bg-[#3c4043] hover:bg-[#4a4e51]" : "bg-[#ea4335] text-white hover:bg-[#d93025]"}`}
+      >
+        {icon}
+      </button>
       {children}
-    </button>
+    </div>
+  )
+}
+
+// DeviceMenu opens above its button: the devices to pick from (null where the browser cannot choose) and the volume.
+function DeviceMenu({
+  title,
+  devices,
+  value,
+  onSelect,
+  volume,
+  onVolume,
+  onClose,
+}: {
+  title: string
+  devices: MediaDeviceInfo[] | null
+  value: string
+  onSelect: (id: string) => void
+  volume: number
+  onVolume: (volume: number) => void
+  onClose: () => void
+}) {
+  const choices = [
+    { id: "default", name: "Same as system" },
+    ...(devices ?? []).filter((d) => d.deviceId && d.deviceId !== "default").map((d) => ({ id: d.deviceId, name: d.label || "Unnamed device" })),
+  ]
+
+  return (
+    <>
+      <div className="fixed inset-0 z-30" onClick={onClose} />
+      <div className="absolute bottom-full left-0 z-40 mb-3 w-72 rounded-xl bg-[#2d2e31] py-2 text-left text-sm shadow-2xl">
+        <p className="px-4 py-2 text-xs font-medium text-[#9aa0a6]">{title}</p>
+        {devices ? (
+          choices.map((choice) => (
+            <button
+              key={choice.id}
+              onClick={() => {
+                onSelect(choice.id)
+                onClose()
+              }}
+              className="flex w-full items-center gap-3 px-4 py-2.5 hover:bg-white/5"
+            >
+              <Check className={`size-4 shrink-0 ${choice.id === value ? "text-[#8ab4f8]" : "invisible"}`} />
+              <span className="truncate">{choice.name}</span>
+            </button>
+          ))
+        ) : (
+          <p className="px-4 py-2 text-[#9aa0a6]">This browser plays through the system speaker.</p>
+        )}
+        {devices?.every((d) => !d.label) && <p className="px-4 pb-2 text-xs text-[#9aa0a6]">Names appear once the browser allows the microphone.</p>}
+        <label className="mt-1 block border-t border-white/10 px-4 pt-3 pb-2">
+          <span className="flex justify-between text-xs text-[#9aa0a6]">
+            <span>Volume</span>
+            <span className="tabular-nums">{Math.round(volume * 100)} %</span>
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={2}
+            step={0.05}
+            value={volume}
+            onChange={(event) => onVolume(Number(event.target.value))}
+            className="mt-2 w-full accent-[#8ab4f8]"
+          />
+        </label>
+      </div>
+    </>
   )
 }
 
@@ -453,127 +595,5 @@ function IncomingDialog({ call, onAnswer, onDecline }: { call: Call; onAnswer: (
         </div>
       </div>
     </div>
-  )
-}
-
-// SettingsPanel picks the microphone and the speaker and sets both volumes. During a call the changes apply at once;
-// otherwise they are used for the next call.
-function SettingsPanel({
-  phone,
-  call,
-  deafened,
-  audio,
-  setAudio,
-  onClose,
-}: {
-  phone: Phone
-  call: Call | null
-  deafened: boolean
-  audio: AudioChoice
-  setAudio: React.Dispatch<React.SetStateAction<AudioChoice>>
-  onClose: () => void
-}) {
-  const [devices, setDevices] = React.useState<{ inputs: MediaDeviceInfo[]; outputs: MediaDeviceInfo[] }>({ inputs: [], outputs: [] })
-  const [error, setError] = React.useState<string | null>(null)
-
-  React.useEffect(() => {
-    void phone.devices().then(setDevices)
-  }, [phone])
-
-  // change keeps a setting for the next calls, and applies it to the call in progress.
-  function change<K extends keyof AudioChoice>(key: K, value: AudioChoice[K], live: (call: Call) => Promise<void> | void) {
-    setAudio((a) => ({ ...a, [key]: value }))
-    if (!call) return
-
-    setError(null)
-    Promise.resolve(live(call)).catch((e: Error) => setError(e.message))
-  }
-
-  return (
-    <div className="fixed inset-0 z-30 flex justify-end bg-black/30" onClick={onClose}>
-      <aside
-        className="flex h-full w-full max-w-sm flex-col bg-[#202124] p-6 shadow-2xl"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="flex items-center justify-between">
-          <h2 className="text-xl">Audio</h2>
-          <button onClick={onClose} className="rounded-full p-2 hover:bg-[#3c4043]" aria-label="Close">
-            <X className="size-5" />
-          </button>
-        </div>
-
-        <div className="mt-8 space-y-7 text-sm">
-          <Field label="Microphone">
-            <Select value={audio.input} devices={devices.inputs} onChange={(id) => change("input", id, (c) => c.setInput(id))} />
-          </Field>
-          <Slider label="Microphone volume" value={audio.inputVolume} onChange={(v) => change("inputVolume", v, (c) => c.setInputVolume(v))} />
-
-          {phone.canChooseOutput && (
-            <Field label="Speakers">
-              <Select value={audio.output} devices={devices.outputs} onChange={(id) => change("output", id, (c) => c.setOutput(id))} />
-            </Field>
-          )}
-          {/* Deafened, the new volume waits for the call to be heard again. */}
-          <Slider
-            label="Speaker volume"
-            value={audio.outputVolume}
-            onChange={(v) => change("outputVolume", v, (c) => (deafened ? undefined : c.setOutputVolume(v)))}
-          />
-
-          {devices.inputs.every((d) => !d.label) && (
-            <p className="text-xs text-[#9aa0a6]">Device names appear once the browser allows the microphone (test it, or call).</p>
-          )}
-          {error && <p className="text-xs text-[#f28b82]">{error}</p>}
-        </div>
-      </aside>
-    </div>
-  )
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block space-y-2">
-      <span className="text-[#8ab4f8]">{label}</span>
-      {children}
-    </label>
-  )
-}
-
-function Select({ value, devices, onChange }: { value: string; devices: MediaDeviceInfo[]; onChange: (id: string) => void }) {
-  return (
-    <select
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      className="w-full rounded-lg border border-[#5f6368] bg-[#202124] px-3 py-2.5 focus:border-[#8ab4f8] focus:outline-none"
-    >
-      <option value="default">Same as system</option>
-      {devices
-        .filter((d) => d.deviceId && d.deviceId !== "default")
-        .map((d) => (
-          <option key={d.deviceId} value={d.deviceId}>
-            {d.label || "Unnamed device"}
-          </option>
-        ))}
-    </select>
-  )
-}
-
-function Slider({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
-  return (
-    <label className="block space-y-2">
-      <span className="flex justify-between">
-        <span className="text-[#8ab4f8]">{label}</span>
-        <span className="tabular-nums text-[#9aa0a6]">{Math.round(value * 100)} %</span>
-      </span>
-      <input
-        type="range"
-        min={0}
-        max={2}
-        step={0.05}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-        className="w-full accent-[#8ab4f8]"
-      />
-    </label>
   )
 }
