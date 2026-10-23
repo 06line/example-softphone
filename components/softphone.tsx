@@ -1,7 +1,7 @@
 "use client"
 
 import { type Call, createPhone, type EndReason, type Phone, type PhoneState } from "@06line/sdk-browser"
-import { Headphones, Mic, MicOff, Phone as PhoneIcon, PhoneOff, Settings, User, X } from "lucide-react"
+import { HeadphoneOff, Headphones, Mic, MicOff, Phone as PhoneIcon, PhoneOff, Settings, User, X } from "lucide-react"
 import * as React from "react"
 
 type LineView = { number: string; online: boolean; signal?: number }
@@ -44,6 +44,8 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
   const [now, setNow] = React.useState(0)
   const [error, setError] = React.useState<string | null>(null)
   const [settings, setSettings] = React.useState(false)
+  // Deafened, the call is silent and the microphone off, like in Discord; mutedBefore is the microphone to restore.
+  const [deafened, setDeafened] = React.useState<{ mutedBefore: boolean } | null>(null)
   const [audio, setAudio] = React.useState<AudioChoice>({ input: "default", output: "default", inputVolume: 1, outputVolume: 1 })
   // The speaker can only be chosen where the browser allows it (not in Safari).
   const audioOptions = { ...audio, output: phone?.canChooseOutput ? audio.output : undefined }
@@ -77,6 +79,7 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
   // ends before it was answered here (missed, or answered on another device) just stops ringing.
   function follow(c: Call) {
     setCall(c)
+    setDeafened(null)
     setLevels({ input: 0, output: 0 })
     c.on("state", redraw)
     c.on("level", setLevels)
@@ -114,6 +117,18 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
     }
   }
 
+  function deafen(c: Call) {
+    if (deafened) {
+      c.setOutputVolume(audio.outputVolume)
+      c.mute(deafened.mutedBefore)
+      return setDeafened(null)
+    }
+
+    setDeafened({ mutedBefore: c.muted })
+    c.setOutputVolume(0)
+    c.mute(true)
+  }
+
   const dial = () => act(async () => follow(await phone!.call({ to: toE164(number), ...audioOptions })))
   const ready = state === "connected" && Boolean(line?.online)
   const incoming = call?.direction === "inbound" && call.state === "ringing" ? call : null
@@ -127,6 +142,8 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
           line={line}
           levels={levels}
           now={now}
+          deafened={Boolean(deafened)}
+          onDeafen={() => deafen(inCall)}
           onSettings={() => setSettings(true)}
           onHangup={() => act(() => inCall.hangup())}
         />
@@ -153,7 +170,7 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
       )}
 
       {settings && phone && (
-        <SettingsPanel phone={phone} call={inCall} audio={audio} setAudio={setAudio} onClose={() => setSettings(false)} />
+        <SettingsPanel phone={phone} call={inCall} deafened={Boolean(deafened)} audio={audio} setAudio={setAudio} onClose={() => setSettings(false)} />
       )}
 
       {error && (
@@ -224,12 +241,17 @@ function Lobby({
             <Avatar label="You" speaking={Boolean(test)} />
           </div>
           <p className="absolute top-4 left-4 text-sm text-[#e8eaed]/80">
-            {test ? "You hear yourself half a second later" : "Check your microphone before calling"}
+            {test ? "You hear yourself half a second later" : "The browser asks for your microphone on the first test or call"}
           </p>
           <div className="absolute inset-x-0 bottom-4 flex justify-center gap-3">
-            <ControlButton label={test ? "Stop the test" : "Test your microphone"} active={Boolean(test)} onClick={toggleTest} disabled={!phone}>
-              <Headphones className="size-5" />
-            </ControlButton>
+            <button
+              onClick={toggleTest}
+              disabled={!phone}
+              className={`flex h-12 items-center gap-2 rounded-full px-5 text-sm font-medium transition disabled:opacity-40 ${test ? "bg-[#8ab4f8] text-[#202124] hover:bg-[#aecbfa]" : "bg-[#202124]/70 hover:bg-[#202124]"}`}
+            >
+              <Mic className="size-5" />
+              {test ? "Stop the test" : "Test your microphone"}
+            </button>
             <ControlButton label="Audio settings" onClick={onSettings} disabled={!phone}>
               <Settings className="size-5" />
             </ControlButton>
@@ -281,6 +303,8 @@ function CallRoom({
   line,
   levels,
   now,
+  deafened,
+  onDeafen,
   onSettings,
   onHangup,
 }: {
@@ -288,6 +312,8 @@ function CallRoom({
   line: LineView | null
   levels: Levels
   now: number
+  deafened: boolean
+  onDeafen: () => void
   onSettings: () => void
   onHangup: () => void
 }) {
@@ -319,10 +345,13 @@ function CallRoom({
           <ControlButton
             label={call.muted ? "Turn on microphone" : "Turn off microphone"}
             danger={call.muted}
-            disabled={ended}
+            disabled={ended || deafened}
             onClick={() => call.mute(!call.muted)}
           >
             {call.muted ? <MicOff className="size-5" /> : <Mic className="size-5" />}
+          </ControlButton>
+          <ControlButton label={deafened ? "Undeafen" : "Deafen"} danger={deafened} disabled={ended} onClick={onDeafen}>
+            {deafened ? <HeadphoneOff className="size-5" /> : <Headphones className="size-5" />}
           </ControlButton>
           <ControlButton label="Audio settings" onClick={onSettings} disabled={ended}>
             <Settings className="size-5" />
@@ -432,12 +461,14 @@ function IncomingDialog({ call, onAnswer, onDecline }: { call: Call; onAnswer: (
 function SettingsPanel({
   phone,
   call,
+  deafened,
   audio,
   setAudio,
   onClose,
 }: {
   phone: Phone
   call: Call | null
+  deafened: boolean
   audio: AudioChoice
   setAudio: React.Dispatch<React.SetStateAction<AudioChoice>>
   onClose: () => void
@@ -482,7 +513,12 @@ function SettingsPanel({
               <Select value={audio.output} devices={devices.outputs} onChange={(id) => change("output", id, (c) => c.setOutput(id))} />
             </Field>
           )}
-          <Slider label="Speaker volume" value={audio.outputVolume} onChange={(v) => change("outputVolume", v, (c) => c.setOutputVolume(v))} />
+          {/* Deafened, the new volume waits for the call to be heard again. */}
+          <Slider
+            label="Speaker volume"
+            value={audio.outputVolume}
+            onChange={(v) => change("outputVolume", v, (c) => (deafened ? undefined : c.setOutputVolume(v)))}
+          />
 
           {devices.inputs.every((d) => !d.label) && (
             <p className="text-xs text-[#9aa0a6]">Device names appear once the browser allows the microphone (test it, or call).</p>
