@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@06line/sdk-browser": "^0.4.0",
+    "@06line/sdk-browser": "^0.4.1",
     "lucide-react": "^1.61.0",
     "next": "16.4.0",
     "react": "19.3.0",
