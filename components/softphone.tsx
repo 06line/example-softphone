@@ -1,6 +1,6 @@
 "use client"
 
-import { type Call, createPhone, type EndReason, type Phone, type PhoneState } from "@06line/sdk-browser"
+import { type Call, createPhone, type EndReason, type MicrophoneTest, type Phone, type PhoneState } from "@06line/sdk-browser"
 import { Check, ChevronUp, Mic, MicOff, Phone as PhoneIcon, PhoneOff, User, Volume2, VolumeX } from "lucide-react"
 import * as React from "react"
 
@@ -51,6 +51,8 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
   const [levels, setLevels] = React.useState<Levels>({ input: 0, output: 0 })
   const [now, setNow] = React.useState(0)
   const [error, setError] = React.useState<string | null>(null)
+  const [test, setTest] = React.useState<MicrophoneTest | null>(null)
+  const [testError, setTestError] = React.useState<string | null>(null)
   const [audio, setAudio] = React.useState<AudioChoice>({
     input: "default",
     output: "default",
@@ -136,28 +138,48 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
   const incoming = call?.direction === "inbound" && call.state === "ringing" ? call : null
   const inCall = call && !incoming && call.state !== "ended" ? call : null
 
-  // change keeps a choice for the next calls, and applies it to the call in progress.
+  // The microphone test stops when it is replaced, when a call starts, and with the page.
+  React.useEffect(() => () => test?.stop(), [test])
+
+  async function toggleTest() {
+    if (test) return setTest(null)
+
+    setTestError(null)
+    try {
+      // The test has no mute: a microphone switched off plays at volume 0.
+      setTest(await phone!.testMicrophone({ ...audioOptions, inputVolume: audio.micOn ? audio.inputVolume : 0 }))
+    } catch (e) {
+      setTestError((e as Error).message)
+    }
+  }
+
+  // change keeps a choice for the next calls, and applies it at once to the call in progress, or else to the
+  // microphone test.
   function change(next: Partial<AudioChoice>) {
     const choice = { ...audio, ...next }
     setAudio(choice)
-    if (!inCall) return
+    const live = inCall ?? test
+    if (!live) return
 
-    if ("micOn" in next) inCall.mute(!choice.micOn)
-    if ("speakerOn" in next || "outputVolume" in next) inCall.setOutputVolume(choice.speakerOn ? choice.outputVolume : 0)
-    if ("inputVolume" in next) inCall.setInputVolume(choice.inputVolume)
-    if ("input" in next) void inCall.setInput(choice.input).catch((e: Error) => setError(e.message))
-    if ("output" in next) void inCall.setOutput(choice.output).catch((e: Error) => setError(e.message))
+    const fail = (e: Error) => setError(e.message)
+    if (inCall && "micOn" in next) inCall.mute(!choice.micOn)
+    if ("inputVolume" in next || (!inCall && "micOn" in next)) live.setInputVolume(inCall || choice.micOn ? choice.inputVolume : 0)
+    if ("speakerOn" in next || "outputVolume" in next) live.setOutputVolume(choice.speakerOn ? choice.outputVolume : 0)
+    if ("input" in next) void live.setInput(choice.input).catch(fail)
+    if ("output" in next) void live.setOutput(choice.output).catch(fail)
   }
 
   // A call opens its microphone on; the one switched off before stays off.
   const dial = () =>
     act(async () => {
+      setTest(null)
       const c = await phone!.call({ to: toE164(number), ...audioOptions })
       if (!audio.micOn) c.mute(true)
       follow(c)
     })
   const answer = (c: Call) =>
     act(async () => {
+      setTest(null)
       await c.answer(audioOptions)
       if (!audio.micOn) c.mute(true)
     })
@@ -185,7 +207,9 @@ export function Softphone({ apiUrl, initialLine }: { apiUrl: string; initialLine
           ready={ready}
           number={number}
           setNumber={setNumber}
-          audioOptions={audioOptions}
+          testing={Boolean(test)}
+          testError={testError}
+          onTest={toggleTest}
           controls={controls}
           onCall={dial}
         />
@@ -219,7 +243,9 @@ function Lobby({
   ready,
   number,
   setNumber,
-  audioOptions,
+  testing,
+  testError,
+  onTest,
   controls,
   onCall,
 }: {
@@ -229,26 +255,12 @@ function Lobby({
   ready: boolean
   number: string
   setNumber: (number: string) => void
-  audioOptions: Parameters<Phone["testMicrophone"]>[0]
+  testing: boolean
+  testError: string | null
+  onTest: () => void
   controls: React.ReactNode
   onCall: () => void
 }) {
-  const [test, setTest] = React.useState<{ stop(): void } | null>(null)
-  const [testError, setTestError] = React.useState<string | null>(null)
-
-  React.useEffect(() => () => test?.stop(), [test])
-
-  async function toggleTest() {
-    if (test) return setTest(null)
-
-    setTestError(null)
-    try {
-      setTest(await phone!.testMicrophone(audioOptions))
-    } catch (e) {
-      setTestError((e as Error).message)
-    }
-  }
-
   const status = state !== "connected" ? (state === "closed" ? "Disconnected" : "Connecting…") : line?.online ? "Online" : "Line offline"
 
   return (
@@ -261,9 +273,9 @@ function Lobby({
       <div className="mx-auto grid w-full max-w-6xl flex-1 items-center gap-10 px-6 pb-16 lg:grid-cols-[1.5fr_1fr]">
         <section className="relative aspect-[4/3] w-full rounded-2xl bg-[#3c4043] sm:aspect-video">
           <div className="absolute inset-0 flex items-center justify-center">
-            <Avatar label="You" speaking={Boolean(test)} />
+            <Avatar label="You" speaking={testing} />
           </div>
-          {test && <p className="absolute top-4 left-4 text-sm text-[#e8eaed]/80">You hear yourself 1.5 s later</p>}
+          {testing && <p className="absolute top-4 left-4 text-sm text-[#e8eaed]/80">You hear yourself 1.5 s later</p>}
           <div className="absolute inset-x-0 bottom-4 flex justify-center">{controls}</div>
         </section>
 
@@ -299,12 +311,12 @@ function Lobby({
             </button>
             <button
               type="button"
-              onClick={toggleTest}
+              onClick={onTest}
               disabled={!phone}
-              className={`flex items-center justify-center gap-2 rounded-full px-6 py-3 font-medium transition disabled:opacity-40 ${test ? "bg-[#8ab4f8] text-[#202124] hover:bg-[#aecbfa]" : "text-[#8ab4f8] hover:bg-[#8ab4f8]/10"}`}
+              className={`flex items-center justify-center gap-2 rounded-full px-6 py-3 font-medium transition disabled:opacity-40 ${testing ? "bg-[#8ab4f8] text-[#202124] hover:bg-[#aecbfa]" : "text-[#8ab4f8] hover:bg-[#8ab4f8]/10"}`}
             >
               <Mic className="size-4" />
-              {test ? "Stop the test" : "Test your microphone"}
+              {testing ? "Stop the test" : "Test your microphone"}
             </button>
             {testError ? (
               <p className="text-xs text-[#f28b82]">{testError}</p>
